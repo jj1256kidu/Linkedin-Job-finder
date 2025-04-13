@@ -1,122 +1,249 @@
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
-from datetime import datetime
 import time
 import random
+from datetime import datetime
+import json
+from typing import List, Dict, Optional
+import logging
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+import pandas as pd
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut
 
-def scrape_google_jobs(query, location):
-    base_url = "https://www.google.com/search"
-    params = {
-        "q": f"{query} jobs {location}",
-        "ibp": "1,7"
-    }
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
-    try:
-        response = requests.get(base_url, params=params, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class JobScraper:
+    def __init__(self):
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        self.geolocator = Nominatim(user_agent="job_scraper")
+        self.driver = None
         
+    def setup_selenium(self):
+        """Initialize Selenium WebDriver"""
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        self.driver = webdriver.Chrome(options=options)
+        
+    def get_location_details(self, location_str: str) -> Dict:
+        """Get detailed location information using geopy"""
+        try:
+            location = self.geolocator.geocode(location_str, timeout=10)
+            if location:
+                return {
+                    'city': location_str,
+                    'country': location.address.split(',')[-1].strip(),
+                    'latitude': location.latitude,
+                    'longitude': location.longitude
+                }
+        except GeocoderTimedOut:
+            logger.warning(f"Geocoding timeout for location: {location_str}")
+        return {
+            'city': location_str,
+            'country': 'Unknown',
+            'latitude': None,
+            'longitude': None
+        }
+
+    def scrape_linkedin(self, keywords: List[str], location: str = "global") -> List[Dict]:
+        """Scrape LinkedIn jobs with global coverage"""
         jobs = []
-        job_cards = soup.find_all('div', class_='g')
-        
-        for card in job_cards:
-            try:
-                title = card.find('h3').text
-                company = card.find('div', class_='s').text.split('·')[0].strip()
-                location = card.find('div', class_='s').text.split('·')[1].strip()
-                description = card.find('div', class_='st').text
+        try:
+            if not self.driver:
+                self.setup_selenium()
                 
-                jobs.append({
-                    'title': title,
-                    'company': company,
-                    'location': location,
-                    'description': description,
-                    'source': 'Google Jobs',
-                    'posted_date': datetime.now().strftime('%Y-%m-%d')
-                })
-            except:
-                continue
-        
+            for keyword in keywords:
+                # Construct LinkedIn search URL
+                search_url = f"https://www.linkedin.com/jobs/search/?keywords={keyword}&location={location}"
+                self.driver.get(search_url)
+                
+                # Wait for job listings to load
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "jobs-search__results-list"))
+                )
+                
+                # Scroll to load more jobs
+                for _ in range(3):
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(2)
+                
+                # Extract job listings
+                job_elements = self.driver.find_elements(By.CLASS_NAME, "job-search-card")
+                
+                for job_element in job_elements:
+                    try:
+                        job_data = {
+                            'source': 'LinkedIn',
+                            'title': job_element.find_element(By.CLASS_NAME, "job-search-card__title").text,
+                            'company': job_element.find_element(By.CLASS_NAME, "job-search-card__subtitle").text,
+                            'location': job_element.find_element(By.CLASS_NAME, "job-search-card__location").text,
+                            'posted_date': job_element.find_element(By.CLASS_NAME, "job-search-card__listdate").text,
+                            'job_url': job_element.find_element(By.CLASS_NAME, "job-search-card__link").get_attribute('href'),
+                            'scraped_at': datetime.now().isoformat()
+                        }
+                        
+                        # Get detailed location information
+                        location_details = self.get_location_details(job_data['location'])
+                        job_data.update(location_details)
+                        
+                        jobs.append(job_data)
+                    except Exception as e:
+                        logger.error(f"Error parsing job element: {e}")
+                        
+                time.sleep(random.uniform(2, 4))  # Random delay between searches
+                
+        except Exception as e:
+            logger.error(f"Error scraping LinkedIn: {e}")
+        finally:
+            if self.driver:
+                self.driver.quit()
+                
         return jobs
-    except Exception as e:
-        print(f"Error scraping Google Jobs: {str(e)}")
-        return []
 
-def scrape_indeed_jobs(query, location):
-    base_url = "https://www.indeed.com/jobs"
-    params = {
-        "q": query,
-        "l": location
-    }
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-    
-    try:
-        response = requests.get(base_url, params=params, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
+    def scrape_indeed(self, keywords: List[str], location: str = "global") -> List[Dict]:
+        """Scrape Indeed jobs with global coverage"""
         jobs = []
-        job_cards = soup.find_all('div', class_='job_seen_beacon')
-        
-        for card in job_cards:
-            try:
-                title = card.find('h2', class_='jobTitle').text.strip()
-                company = card.find('span', class_='companyName').text.strip()
-                location = card.find('div', class_='companyLocation').text.strip()
-                description = card.find('div', class_='job-snippet').text.strip()
+        try:
+            for keyword in keywords:
+                # Construct Indeed search URL
+                search_url = f"https://www.indeed.com/jobs?q={keyword}&l={location}"
+                response = requests.get(search_url, headers=self.headers)
+                soup = BeautifulSoup(response.text, 'html.parser')
                 
-                jobs.append({
-                    'title': title,
-                    'company': company,
-                    'location': location,
-                    'description': description,
-                    'source': 'Indeed',
-                    'posted_date': datetime.now().strftime('%Y-%m-%d')
-                })
-            except:
-                continue
-        
+                job_elements = soup.find_all('div', class_='job_seen_beacon')
+                
+                for job_element in job_elements:
+                    try:
+                        job_data = {
+                            'source': 'Indeed',
+                            'title': job_element.find('h2', class_='jobTitle').text.strip(),
+                            'company': job_element.find('span', class_='companyName').text.strip(),
+                            'location': job_element.find('div', class_='companyLocation').text.strip(),
+                            'posted_date': job_element.find('span', class_='date').text.strip(),
+                            'job_url': "https://www.indeed.com" + job_element.find('a')['href'],
+                            'scraped_at': datetime.now().isoformat()
+                        }
+                        
+                        # Get detailed location information
+                        location_details = self.get_location_details(job_data['location'])
+                        job_data.update(location_details)
+                        
+                        jobs.append(job_data)
+                    except Exception as e:
+                        logger.error(f"Error parsing job element: {e}")
+                        
+                time.sleep(random.uniform(2, 4))  # Random delay between searches
+                
+        except Exception as e:
+            logger.error(f"Error scraping Indeed: {e}")
+            
         return jobs
-    except Exception as e:
-        print(f"Error scraping Indeed: {str(e)}")
-        return []
 
-def scrape_jobs():
-    # Define search queries and locations
-    queries = [
-        "R&D engineer",
-        "product development",
-        "research and development",
-        "new product development",
-        "innovation engineer"
+    def scrape_glassdoor(self, keywords: List[str], location: str = "global") -> List[Dict]:
+        """Scrape Glassdoor jobs with global coverage"""
+        jobs = []
+        try:
+            for keyword in keywords:
+                # Construct Glassdoor search URL
+                search_url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={keyword}&locT=C&locId=1"
+                response = requests.get(search_url, headers=self.headers)
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                job_elements = soup.find_all('li', class_='react-job-listing')
+                
+                for job_element in job_elements:
+                    try:
+                        job_data = {
+                            'source': 'Glassdoor',
+                            'title': job_element.find('a', class_='jobLink').text.strip(),
+                            'company': job_element.find('div', class_='employerName').text.strip(),
+                            'location': job_element.find('div', class_='location').text.strip(),
+                            'posted_date': job_element.find('div', class_='job-age').text.strip(),
+                            'job_url': "https://www.glassdoor.com" + job_element.find('a', class_='jobLink')['href'],
+                            'scraped_at': datetime.now().isoformat()
+                        }
+                        
+                        # Get detailed location information
+                        location_details = self.get_location_details(job_data['location'])
+                        job_data.update(location_details)
+                        
+                        jobs.append(job_data)
+                    except Exception as e:
+                        logger.error(f"Error parsing job element: {e}")
+                        
+                time.sleep(random.uniform(2, 4))  # Random delay between searches
+                
+        except Exception as e:
+            logger.error(f"Error scraping Glassdoor: {e}")
+            
+        return jobs
+
+    def scrape_all_sources(self, keywords: List[str], location: str = "global") -> pd.DataFrame:
+        """Scrape jobs from all sources and return as DataFrame"""
+        all_jobs = []
+        
+        # Scrape from LinkedIn
+        linkedin_jobs = self.scrape_linkedin(keywords, location)
+        all_jobs.extend(linkedin_jobs)
+        
+        # Scrape from Indeed
+        indeed_jobs = self.scrape_indeed(keywords, location)
+        all_jobs.extend(indeed_jobs)
+        
+        # Scrape from Glassdoor
+        glassdoor_jobs = self.scrape_glassdoor(keywords, location)
+        all_jobs.extend(glassdoor_jobs)
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(all_jobs)
+        
+        # Add timestamp for when the data was scraped
+        df['scraped_at'] = datetime.now().isoformat()
+        
+        return df
+
+    def save_to_csv(self, df: pd.DataFrame, filename: str = "jobs_data.csv"):
+        """Save job data to CSV file"""
+        df.to_csv(filename, index=False)
+        logger.info(f"Saved {len(df)} jobs to {filename}")
+
+    def save_to_json(self, df: pd.DataFrame, filename: str = "jobs_data.json"):
+        """Save job data to JSON file"""
+        df.to_json(filename, orient='records', lines=True)
+        logger.info(f"Saved {len(df)} jobs to {filename}")
+
+# Example usage
+if __name__ == "__main__":
+    scraper = JobScraper()
+    
+    # Example keywords
+    keywords = [
+        "Automotive Software Engineer",
+        "ADAS Engineer",
+        "Autonomous Vehicle Developer",
+        "EV Systems Engineer"
     ]
     
-    locations = [
-        "United States",
-        "Europe",
-        "Asia",
-        "Remote"
-    ]
+    # Scrape jobs from all sources
+    jobs_df = scraper.scrape_all_sources(keywords, location="global")
     
-    all_jobs = []
+    # Save to CSV and JSON
+    scraper.save_to_csv(jobs_df)
+    scraper.save_to_json(jobs_df)
     
-    for query in queries:
-        for location in locations:
-            # Scrape from Google Jobs
-            google_jobs = scrape_google_jobs(query, location)
-            all_jobs.extend(google_jobs)
-            
-            # Scrape from Indeed
-            indeed_jobs = scrape_indeed_jobs(query, location)
-            all_jobs.extend(indeed_jobs)
-            
-            # Add delay to avoid rate limiting
-            time.sleep(random.uniform(1, 3))
-    
-    return pd.DataFrame(all_jobs) 
+    # Print summary
+    print(f"\nScraped {len(jobs_df)} jobs from multiple sources")
+    print("\nJob distribution by source:")
+    print(jobs_df['source'].value_counts())
+    print("\nJob distribution by country:")
+    print(jobs_df['country'].value_counts()) 
