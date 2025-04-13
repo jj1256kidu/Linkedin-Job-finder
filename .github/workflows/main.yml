@@ -1,4 +1,4 @@
-name: Job Scraper Workflow
+name: Job Scraper Workflow R&D
 
 on:
   schedule:
