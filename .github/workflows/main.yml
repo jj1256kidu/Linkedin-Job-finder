@@ -1,4 +1,4 @@
-name: Job Scraper Workflow R&D
+name: Job Scraper Workflow
 
 on:
   schedule:
@@ -32,7 +32,6 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
         pip install selenium beautifulsoup4 pandas geopy gspread oauth2client gspread-dataframe
 
     - name: Install Chrome
