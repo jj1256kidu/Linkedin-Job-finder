@@ -296,7 +296,7 @@ class JobScraper:
 if __name__ == "__main__":
     scraper = JobScraper()
     
-    # Example keywords
+    # Define your search keywords
     keywords = [
         "Automotive Software Engineer",
         "ADAS Engineer",
@@ -304,10 +304,10 @@ if __name__ == "__main__":
         "EV Systems Engineer"
     ]
     
-    # Scrape and update Google Sheets
+    # Run the scraper and update Google Sheets
     scraper.scrape_and_update_sheets(
         keywords=keywords,
-        location="global",
+        location="global",  # or specify a country/region
         spreadsheet_name="Product development",
         worksheet_name="Data"
     ) 
