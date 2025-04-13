@@ -42,15 +42,20 @@ jobs:
       env:
         PYTHONPATH: ${{ github.workspace }}
 
-    - name: Upload logs
-      uses: actions/upload-artifact@v3
+    - name: Store logs
       if: always()
-      with:
-        name: scraper-logs
-        path: |
-          *.log
-          *.csv
-          *.json
+      run: |
+        mkdir -p logs
+        # Save any log files
+        find . -name "*.log" -exec cp {} logs/ \;
+        # Save any CSV files
+        find . -name "*.csv" -exec cp {} logs/ \;
+        # Save any JSON files
+        find . -name "*.json" -exec cp {} logs/ \;
+        # Create a summary file
+        echo "Workflow run summary" > logs/summary.txt
+        echo "Run date: $(date)" >> logs/summary.txt
+        echo "Status: ${{ job.status }}" >> logs/summary.txt
 
     - name: Notify on failure
       if: failure()
