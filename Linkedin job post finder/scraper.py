@@ -17,9 +17,17 @@ from geopy.exc import GeocoderTimedOut
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from gspread_dataframe import set_with_dataframe
+import argparse
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('scraper.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 class JobScraper:
@@ -47,26 +55,35 @@ class JobScraper:
     def push_to_sheets(self, df: pd.DataFrame, spreadsheet_name: str = "Product development", worksheet_name: str = "Data"):
         """Push job data to Google Sheets"""
         try:
+            logger.info(f"Attempting to open spreadsheet: {spreadsheet_name}")
             # Open the spreadsheet
             spreadsheet = self.gc.open(spreadsheet_name)
+            logger.info(f"Successfully opened spreadsheet: {spreadsheet_name}")
             
             # Select the worksheet
             try:
                 worksheet = spreadsheet.worksheet(worksheet_name)
+                logger.info(f"Found existing worksheet: {worksheet_name}")
             except gspread.WorksheetNotFound:
                 worksheet = spreadsheet.add_worksheet(worksheet_name, rows=1000, cols=20)
+                logger.info(f"Created new worksheet: {worksheet_name}")
             
             # Clear existing data
             worksheet.clear()
+            logger.info("Cleared existing data from worksheet")
             
             # Add headers
             headers = df.columns.tolist()
             worksheet.append_row(headers)
+            logger.info(f"Added headers: {headers}")
             
             # Add data
             set_with_dataframe(worksheet, df, include_index=False, include_column_header=False, resize=True)
-            
             logger.info(f"Successfully pushed {len(df)} jobs to Google Sheets")
+            
+            # Verify data was written
+            cell_count = worksheet.row_count
+            logger.info(f"Current worksheet row count: {cell_count}")
             
         except Exception as e:
             logger.error(f"Error pushing to Google Sheets: {e}")
@@ -292,22 +309,39 @@ class JobScraper:
             logger.error(f"Error in scrape_and_update_sheets: {e}")
             raise
 
-# Example usage
-if __name__ == "__main__":
+def main():
+    parser = argparse.ArgumentParser(description='Job Scraper')
+    parser.add_argument('--keywords', nargs='+', help='List of keywords to search for')
+    parser.add_argument('--location', default='global', help='Location to search in')
+    args = parser.parse_args()
+
+    logger.info("Starting job scraper")
+    logger.info(f"Keywords: {args.keywords}")
+    logger.info(f"Location: {args.location}")
+
     scraper = JobScraper()
     
-    # Define your search keywords
-    keywords = [
-        "Automotive Software Engineer",
-        "ADAS Engineer",
-        "Autonomous Vehicle Developer",
-        "EV Systems Engineer"
-    ]
-    
-    # Run the scraper and update Google Sheets
-    scraper.scrape_and_update_sheets(
-        keywords=keywords,
-        location="global",  # or specify a country/region
-        spreadsheet_name="Product development",
-        worksheet_name="Data"
-    ) 
+    try:
+        # Scrape jobs
+        jobs_df = scraper.scrape_all_sources(args.keywords, args.location)
+        
+        if not jobs_df.empty:
+            logger.info(f"Scraped {len(jobs_df)} jobs")
+            # Push to Google Sheets
+            scraper.push_to_sheets(jobs_df)
+            
+            # Print summary
+            print(f"\nScraped {len(jobs_df)} jobs from multiple sources")
+            print("\nJob distribution by source:")
+            print(jobs_df['source'].value_counts())
+            print("\nJob distribution by country:")
+            print(jobs_df['country'].value_counts())
+        else:
+            logger.warning("No jobs found to update in Google Sheets")
+            
+    except Exception as e:
+        logger.error(f"Error in main: {e}")
+        raise
+
+if __name__ == "__main__":
+    main() 
