@@ -1,70 +1,105 @@
-name: R&D Job Finder Update
+name: Job Scraper Workflow
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Runs every 6 hours
-  workflow_dispatch:  # Allows manual trigger
-  push:
-    branches: [ main ]
-    paths:
-      - 'scraper.py'
-      - 'processor.py'
-      - 'update_jobs.py'
+    # Run every day at 8:00 AM UTC
+    - cron: '0 8 * * *'
+  # Allow manual triggering
+  workflow_dispatch:
+    inputs:
+      location:
+        description: 'Location to search for jobs (e.g., "global", "United States", "Europe")'
+        required: false
+        default: 'global'
+      keywords:
+        description: 'Comma-separated list of keywords to search for'
+        required: false
+        default: 'Automotive Software Engineer,ADAS Engineer,Autonomous Vehicle Developer'
 
 jobs:
   update-jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v2
-    
+    - name: Checkout code
+      uses: actions/checkout@v3
+
     - name: Set up Python
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v4
       with:
-        python-version: '3.9'
-    
+        python-version: '3.10'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
+        pip install selenium beautifulsoup4 pandas geopy gspread oauth2client gspread-dataframe
+
+    - name: Install Chrome
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y chromium-browser
+        sudo apt-get install -y chromium-chromedriver
+
     - name: Create credentials file
+      run: |
+        echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+
+    - name: Run scraper
+      run: |
+        # Convert comma-separated keywords to array
+        IFS=',' read -ra KEYWORDS <<< "${{ github.event.inputs.keywords }}"
+        # Run scraper with parameters
+        python scraper.py --keywords "${KEYWORDS[@]}" --location "${{ github.event.inputs.location }}"
       env:
-        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        PYTHONPATH: ${{ github.workspace }}
+
+    - name: Store logs
+      if: always()
       run: |
-        echo "$GOOGLE_CREDENTIALS" > credentials.json
-    
-    - name: Run job scraper
-      id: scraper
-      run: |
-        python update_jobs.py
-      continue-on-error: true
-    
+        mkdir -p logs
+        # Save any log files
+        find . -name "*.log" -exec cp {} logs/ \;
+        # Save any CSV files
+        find . -name "*.csv" -exec cp {} logs/ \;
+        # Save any JSON files
+        find . -name "*.json" -exec cp {} logs/ \;
+        # Create a summary file
+        echo "Workflow run summary" > logs/summary.txt
+        echo "Run date: $(date)" >> logs/summary.txt
+        echo "Status: ${{ job.status }}" >> logs/summary.txt
+        echo "Location: ${{ github.event.inputs.location }}" >> logs/summary.txt
+        echo "Keywords: ${{ github.event.inputs.keywords }}" >> logs/summary.txt
+
     - name: Notify on failure
       if: failure()
       uses: rtCamp/action-slack-notify@v2
       env:
         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        SLACK_CHANNEL: alerts
-        SLACK_COLOR: danger
-        SLACK_TITLE: Job Scraper Failed
-        SLACK_MESSAGE: 'Job scraper failed to update Google Sheet. Check the logs for details.'
-    
+        SLACK_CHANNEL: '#job-scraper'
+        SLACK_COLOR: '#FF0000'
+        SLACK_TITLE: 'Job Scraper Failed'
+        SLACK_MESSAGE: 'Job scraper workflow failed. Check the logs for details.'
+        SLACK_FOOTER: 'GitHub Actions'
+
     - name: Notify on success
       if: success()
       uses: rtCamp/action-slack-notify@v2
       env:
         SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-        SLACK_CHANNEL: updates
-        SLACK_COLOR: good
-        SLACK_TITLE: Job Scraper Success
-        SLACK_MESSAGE: 'Job scraper successfully updated Google Sheet with new data.'
-    
-    - name: Upload logs
-      uses: actions/upload-artifact@v2
+        SLACK_CHANNEL: '#job-scraper'
+        SLACK_COLOR: '#00FF00'
+        SLACK_TITLE: 'Job Scraper Succeeded'
+        SLACK_MESSAGE: 'Job scraper workflow completed successfully. Google Sheet has been updated.'
+        SLACK_FOOTER: 'GitHub Actions'
+
+    - name: Cleanup
       if: always()
-      with:
-        name: scraper-logs
-        path: |
-          *.log
-          scraper_output.txt 
+      run: |
+        # Remove sensitive files
+        rm -f credentials.json
+        # Clean up temporary files
+        rm -f *.tmp
+        # Remove Chrome installation
+        sudo apt-get remove -y chromium-browser chromium-chromedriver
+        sudo apt-get autoremove -y 
