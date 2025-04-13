@@ -32,8 +32,8 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # Install core dependencies
-        pip install selenium beautifulsoup4 pandas geopy gspread oauth2client gspread-dataframe requests python-dotenv webdriver-manager
+        # Install all required packages directly
+        pip install selenium==4.18.1 beautifulsoup4==4.12.3 pandas==2.2.1 geopy==2.4.1 gspread==5.12.4 oauth2client==4.1.3 gspread-dataframe==3.3.1 requests==2.31.0 python-dotenv==1.0.1 webdriver-manager==4.0.1
         # Verify installations
         pip list
 
