@@ -14,19 +14,64 @@ from selenium.common.exceptions import TimeoutException
 import pandas as pd
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from gspread_dataframe import set_with_dataframe
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class JobScraper:
-    def __init__(self):
+    def __init__(self, credentials_path: str = "credentials.json"):
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         self.geolocator = Nominatim(user_agent="job_scraper")
         self.driver = None
+        self.credentials_path = credentials_path
+        self.setup_google_sheets()
         
+    def setup_google_sheets(self):
+        """Initialize Google Sheets connection"""
+        try:
+            scope = ['https://spreadsheets.google.com/feeds',
+                    'https://www.googleapis.com/auth/drive']
+            credentials = ServiceAccountCredentials.from_json_keyfile_name(self.credentials_path, scope)
+            self.gc = gspread.authorize(credentials)
+            logger.info("Successfully connected to Google Sheets")
+        except Exception as e:
+            logger.error(f"Error setting up Google Sheets: {e}")
+            raise
+
+    def push_to_sheets(self, df: pd.DataFrame, spreadsheet_name: str = "Product development", worksheet_name: str = "Data"):
+        """Push job data to Google Sheets"""
+        try:
+            # Open the spreadsheet
+            spreadsheet = self.gc.open(spreadsheet_name)
+            
+            # Select the worksheet
+            try:
+                worksheet = spreadsheet.worksheet(worksheet_name)
+            except gspread.WorksheetNotFound:
+                worksheet = spreadsheet.add_worksheet(worksheet_name, rows=1000, cols=20)
+            
+            # Clear existing data
+            worksheet.clear()
+            
+            # Add headers
+            headers = df.columns.tolist()
+            worksheet.append_row(headers)
+            
+            # Add data
+            set_with_dataframe(worksheet, df, include_index=False, include_column_header=False, resize=True)
+            
+            logger.info(f"Successfully pushed {len(df)} jobs to Google Sheets")
+            
+        except Exception as e:
+            logger.error(f"Error pushing to Google Sheets: {e}")
+            raise
+
     def setup_selenium(self):
         """Initialize Selenium WebDriver"""
         options = webdriver.ChromeOptions()
@@ -222,6 +267,31 @@ class JobScraper:
         df.to_json(filename, orient='records', lines=True)
         logger.info(f"Saved {len(df)} jobs to {filename}")
 
+    def scrape_and_update_sheets(self, keywords: List[str], location: str = "global", 
+                               spreadsheet_name: str = "Product development", 
+                               worksheet_name: str = "Data"):
+        """Scrape jobs and update Google Sheets in one operation"""
+        try:
+            # Scrape jobs
+            jobs_df = self.scrape_all_sources(keywords, location)
+            
+            if not jobs_df.empty:
+                # Push to Google Sheets
+                self.push_to_sheets(jobs_df, spreadsheet_name, worksheet_name)
+                
+                # Print summary
+                print(f"\nScraped {len(jobs_df)} jobs from multiple sources")
+                print("\nJob distribution by source:")
+                print(jobs_df['source'].value_counts())
+                print("\nJob distribution by country:")
+                print(jobs_df['country'].value_counts())
+            else:
+                logger.warning("No jobs found to update in Google Sheets")
+                
+        except Exception as e:
+            logger.error(f"Error in scrape_and_update_sheets: {e}")
+            raise
+
 # Example usage
 if __name__ == "__main__":
     scraper = JobScraper()
@@ -234,16 +304,10 @@ if __name__ == "__main__":
         "EV Systems Engineer"
     ]
     
-    # Scrape jobs from all sources
-    jobs_df = scraper.scrape_all_sources(keywords, location="global")
-    
-    # Save to CSV and JSON
-    scraper.save_to_csv(jobs_df)
-    scraper.save_to_json(jobs_df)
-    
-    # Print summary
-    print(f"\nScraped {len(jobs_df)} jobs from multiple sources")
-    print("\nJob distribution by source:")
-    print(jobs_df['source'].value_counts())
-    print("\nJob distribution by country:")
-    print(jobs_df['country'].value_counts()) 
+    # Scrape and update Google Sheets
+    scraper.scrape_and_update_sheets(
+        keywords=keywords,
+        location="global",
+        spreadsheet_name="Product development",
+        worksheet_name="Data"
+    ) 
